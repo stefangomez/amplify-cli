@@ -31,6 +31,8 @@ const confirmMigrateMessage =
 'We detected the project was initialized using an older version of the CLI. Do you want to migrate the project, so that it is compatible with the latest version of the CLI?';
 const secondConfirmMessage =
 'The CLI would be modifying your Amplify backend configuration files as a part of the migration process, hence we highly recommend backing up your existing local project before moving ahead. Are you sure you want to continue?';
+const securityTypeConfirmMigrateMessage =
+'We detected the project is using a previous authorization configuration for AppSync, to support multiple authorization providers a one time migration is needed. This migration is a configuration only migration. Do you want to migrate the project, so that it is compatible with the latest version of the CLI?';
 
 async function migrateProject(context) {
   const projectPath = searchProjectRootPath();
@@ -44,8 +46,18 @@ async function migrateProject(context) {
   // First level check
   // New projects also don't have projectPaths
   if (!projectConfig.projectPath) {
+    // If current backendConfig and amplifyMeta contains securityType then we've to migrate it to the new authConfig.
+    if (!projectHasLegacyAuthConfig(projectPath)) {
+      return;
+    }
+
+    if (await prompt.confirm(securityTypeConfirmMigrateMessage)) {
+      migrateToNewAuthConfig(context, projectPath);
+    }
+
     return;
   }
+
   if (projectConfig.version !== constants.PROJECT_CONFIG_VERSION) {
     if (await prompt.confirm(confirmMigrateMessage)) {
       const infoMessage = `${chalk.bold('The CLI is going to take the following actions during the migration step:')}\n` +
@@ -163,6 +175,9 @@ function generateMigrationInfo(projectConfig, projectPath) {
   };
   migrationInfo.amplifyMeta = getAmplifyMeta(projectPath);
   migrationInfo.currentAmplifyMeta = getCurrentAmplifyMeta(projectPath);
+
+  migrateAppSyncSecurityTypeInMeta(migrationInfo.amplifyMeta);
+
   migrationInfo.projectConfig = generateNewProjectConfig(projectConfig);
   migrationInfo.localEnvInfo = generateLocalEnvInfo(projectConfig);
   migrationInfo.localAwsInfo = generateLocalAwsInfo(projectPath);
@@ -298,6 +313,36 @@ function persistTeamProviderInfo(teamProviderInfo, projectPath) {
   }
 }
 
+function migrateAppSyncSecurityTypeInMeta(amplifyMeta) {
+  Object.keys(amplifyMeta).forEach((category) => {
+    if (category !== 'providers') {
+      Object.keys(amplifyMeta[category]).forEach((resourceName) => {
+        if (amplifyMeta[category][resourceName].service === 'AppSync') {
+          if (amplifyMeta[category][resourceName].output) {
+            // If already has authConfig then skip current resource
+            if (!amplifyMeta[category][resourceName].output.authConfig) {
+              amplifyMeta[category][resourceName].output.authConfig = {
+                defaultAuthentication: {
+                  authenticationType: amplifyMeta[category][resourceName].output.securityType
+                }
+              };
+
+              if (amplifyMeta[category][resourceName].output.securityType === 'API_KEY') {
+                // In case of API key preserve the old 7 days default behavior
+                amplifyMeta[category][resourceName].output.authConfig.defaultAuthentication.apiKeyConfig = {
+                  apiKeyExpirationDays: 7
+                };
+              }
+
+              delete amplifyMeta[category][resourceName].output.securityType;
+            }
+          }
+        }
+      });
+    }
+  });
+}
+
 function generateBackendConfig(amplifyMeta) {
   const backendConfig = {};
   Object.keys(amplifyMeta).forEach((category) => {
@@ -316,14 +361,26 @@ function generateBackendConfig(amplifyMeta) {
         if (amplifyMeta[category][resourceName].service === 'AppSync') {
           backendConfig[category][resourceName].output = {};
           if (amplifyMeta[category][resourceName].output) {
-            backendConfig[category][resourceName].output.securityType =
-            amplifyMeta[category][resourceName].output.securityType;
+            backendConfig[category][resourceName].output.authConfig =
+              amplifyMeta[category][resourceName].output.authConfig;
+          }
+
+          if (amplifyMeta[category][resourceName].output.authConfig.defaultAuthentication.authenticationType === 'API_KEY') {
+            // In case of API key preserve the old 7 days default behavior
+            backendConfig[category][resourceName].output.authConfig.defaultAuthentication.apiKeyConfig = {
+              apiKeyExpirationDays: 7
+            };
           }
         }
       });
     }
   });
   return backendConfig;
+}
+
+function getBackendConfig(projectPath) {
+  const backendConfigFilePath = getBackendConfigFilePath(projectPath);
+  return readJsonFile(backendConfigFilePath);
 }
 
 function persistBackendConfig(backendConfig, projectPath) {
@@ -342,6 +399,79 @@ function removeAmplifyRCFile(projectPath) {
 function updateGitIgnoreFile(projectPath) {
   const gitIgnoreFilePath = getGitIgnoreFilePath(projectPath);
   gitManager.insertAmplifyIgnore(gitIgnoreFilePath);
+}
+
+function projectHasLegacyAuthConfig(projectPath) {
+  let result = false;
+  const backendConfig = getBackendConfig(projectPath);
+
+  if (backendConfig && backendConfig.api) {
+    Object.keys(backendConfig.api).forEach((resourceName) => {
+      if (backendConfig.api[resourceName].service === 'AppSync' &&
+          backendConfig.api[resourceName].output &&
+          backendConfig.api[resourceName].output.securityType) {
+            result = true;
+          }
+        });
+  }
+
+  return result;
+}
+
+function migrateToNewAuthConfig(context, projectPath) {
+  // Migrate backendConfig
+  const backendConfig = getBackendConfig(projectPath);
+
+  if (migrateDefaultAuth(backendConfig)) {
+    persistBackendConfig(backendConfig, projectPath);
+  }
+
+  // Migrate amplifyMeta
+  const amplifyMeta = getAmplifyMeta(projectPath);
+
+  if (migrateDefaultAuth(amplifyMeta)) {
+    persistAmplifyMeta(amplifyMeta, projectPath);
+  }
+
+  // Migrate currentAmplifyMeta if exists
+  const currentAmplifyMeta = getCurrentAmplifyMeta(projectPath);
+
+  if (migrateDefaultAuth(currentAmplifyMeta)) {
+    persistCurrentAmplifyMeta(amplifyMeta, projectPath);
+  }
+}
+
+function migrateDefaultAuth(targetObject) {
+  let updated = false;
+
+  if (targetObject && targetObject.api) {
+    Object.keys(targetObject.api).forEach((resourceName) => {
+      if (targetObject.api[resourceName].service === 'AppSync' &&
+        targetObject.api[resourceName].output &&
+        targetObject.api[resourceName].output.securityType) {
+          createDefaultAuth(targetObject.api[resourceName].output);
+          updated = true;
+      }
+    });
+  }
+
+  return updated;
+}
+
+function createDefaultAuth(appSyncOutput) {
+  appSyncOutput.authConfig = {
+    defaultAuthentication: {
+      authenticationType: appSyncOutput.securityType
+    }
+  }
+
+  if (appSyncOutput.securityType === 'API_KEY') {
+    appSyncOutput.authConfig.defaultAuthentication.apiKeyConfig = {
+      apiKeyExpirationDays: 7
+    };
+  }
+
+  delete appSyncOutput.securityType;
 }
 
 module.exports = {

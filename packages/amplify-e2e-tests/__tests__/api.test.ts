@@ -27,7 +27,7 @@ describe('amplify add api', () => {
 
     // TODO - Validate these using control plane API calls.
     const { GraphQLAPIIdOutput, GraphQLAPIEndpointOutput, GraphQLAPIKeyOutput } = output;
-    
+
     await expect(GraphQLAPIIdOutput).toBeDefined()
     await expect(GraphQLAPIEndpointOutput).toBeDefined()
     await expect(GraphQLAPIKeyOutput).toBeDefined()

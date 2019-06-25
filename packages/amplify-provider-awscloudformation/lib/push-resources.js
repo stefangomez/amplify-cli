@@ -32,11 +32,28 @@ async function run(context, category, resourceName) {
   validateCfnTemplates(context, resources);
 
   return packageResources(context, resources)
-    .then(() => transformGraphQLSchema(context, {
-      noConfig: true,
-      handleMigration: opts =>
-        updateStackForAPIMigration(context, 'api', resourceName, opts),
-    }))
+    .then(() => {
+      projectDetails = context.amplify.getProjectDetails();
+
+      const appSyncAPIs = Object.keys(projectDetails.amplifyMeta.api).reduce((acc, apiName) => {
+        const api = projectDetails.amplifyMeta.api[apiName];
+        if (api.service === 'AppSync') {
+          acc.push({ ...api, name: apiName });
+        }
+        return acc;
+      }, []);
+
+      const appSyncApi = (appSyncAPIs && appSyncAPIs.length && appSyncAPIs.length > 0) ? appSyncAPIs[0] : undefined;
+
+      const authConfig = appSyncApi ? appSyncApi.output.authConfig : {};
+
+      return transformGraphQLSchema(context, {
+        noConfig: true,
+        handleMigration: opts =>
+          updateStackForAPIMigration(context, 'api', resourceName, opts),
+        authConfig
+      });
+    })
     .then(() => uploadAppSyncFiles(context, resources, allResources))
     .then(() => prePushGraphQLCodegen(context, resourcesToBeCreated, resourcesToBeUpdated))
     .then(() => updateS3Templates(context, allResources, projectDetails.amplifyMeta))

@@ -24,12 +24,17 @@ async function getAppSyncAPIInfo(context, apiId, region) {
       apiKeys = await getAPIKeys(context, apiId, region);
     }
 
+    // Transform the authentication options to Amplify meta format
+
+
     return {
       id: graphqlApi.apiId,
       endpoint: graphqlApi.uris.GRAPHQL,
       name: graphqlApi.name,
-      securityType: graphqlApi.authenticationType,
-      additionalAuthenticationProviders,
+      defaultAuthentication: graphqlApi.defaultAuthentication,
+      additionalAuthenticationProviders: graphqlApi.additionalAuthenticationProviders || null,
+      userPoolConfig: graphqlApi.userPoolConfig,
+      openIDConnectConfig: graphqlApi.openIDConnectConfig,
       apiKeys,
       region, // region override for externally added API
     };

@@ -91,7 +91,7 @@ async function transformGraphQLSchema(context, options) {
     return;
   }
 
-  let { resourceDir, parameters } = options;
+  let { resourceDir, parameters, authConfig } = options;
   // const { noConfig } = options;
   const { forceCompile } = options;
 
@@ -208,7 +208,6 @@ async function transformGraphQLSchema(context, options) {
     { isUserPoolEnabled: Boolean(parameters.AuthCognitoUserPoolId) },
   );
 
-  const authMode = parameters.AuthCognitoUserPoolId ? 'AMAZON_COGNITO_USER_POOLS' : 'API_KEY';
   const transformerList = [
     new DynamoDBModelTransformer(getModelConfig(project)),
     new ModelConnectionTransformer(),
@@ -218,7 +217,7 @@ async function transformGraphQLSchema(context, options) {
     new KeyTransformer(),
     // TODO: Build dependency mechanism into transformers. Auth runs last
     // so any resolvers that need to be protected will already be created.
-    new ModelAuthTransformer({ authMode }),
+    new ModelAuthTransformer({ authConfig }),
   ];
 
   if (usedDirectives.includes('searchable')) {

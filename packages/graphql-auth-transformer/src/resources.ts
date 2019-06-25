@@ -1,7 +1,6 @@
 import Template from 'cloudform-types/types/template'
 import Cognito from 'cloudform-types/types/cognito'
 import Output from 'cloudform-types/types/output'
-import GraphQLAPI, { UserPoolConfig } from 'cloudform-types/types/appSync/graphQlApi'
 import { AppSync, Fn, StringParameter, Refs, NumberParameter, Condition } from 'cloudform-types'
 import { AuthRule } from './AuthRule'
 import {
@@ -11,7 +10,8 @@ import {
     block, print
 } from 'graphql-mapping-template'
 import { ResourceConstants, NONE_VALUE } from 'graphql-transformer-common'
-import { AppSyncAuthModeModes } from './ModelAuthTransformer';
+import GraphQLAPI, { UserPoolConfig, GraphQLApiProperties, OpenIDConnectConfig, AdditionalAuthenticationProvider } from './graphQlApi'
+import * as Transformer from './ModelAuthTransformer'
 
 import {
     OWNER_AUTH_STRATEGY,
@@ -43,21 +43,18 @@ export class ResourceFactory {
     /**
      * Creates the barebones template for an application.
      */
-    public initTemplate(): Template {
+    public initTemplate(apiKeyConfig: Transformer.ApiKeyConfig): Template {
         return {
             Parameters: this.makeParams(),
             Resources: {
-                [ResourceConstants.RESOURCES.APIKeyLogicalID]: this.makeAppSyncApiKey()
+                [ResourceConstants.RESOURCES.APIKeyLogicalID]: this.makeAppSyncApiKey(apiKeyConfig)
             },
             Outputs: {
                 [ResourceConstants.OUTPUTS.GraphQLAPIApiKeyOutput]: this.makeApiKeyOutput()
             },
             Conditions: {
                 [ResourceConstants.CONDITIONS.ShouldCreateAPIKey]:
-                    Fn.And([
-                        Fn.Not(Fn.Equals(Fn.Ref(ResourceConstants.PARAMETERS.APIKeyExpirationEpoch), -1)),
-                        Fn.Equals(Fn.Ref(ResourceConstants.PARAMETERS.AuthCognitoUserPoolId), ResourceConstants.NONE)
-                    ]),
+                    Fn.Not(Fn.Equals(Fn.Ref(ResourceConstants.PARAMETERS.APIKeyExpirationEpoch), -1)),
                 [ResourceConstants.CONDITIONS.APIKeyExpirationEpochIsPositive]:
                     Fn.And([
                         Fn.Not(Fn.Equals(Fn.Ref(ResourceConstants.PARAMETERS.APIKeyExpirationEpoch), -1)),
@@ -67,15 +64,20 @@ export class ResourceFactory {
         }
     }
 
-    public makeAppSyncApiKey() {
-        const oneWeekFromNowInSeconds = 60 /* s */ * 60 /* m */ * 24 /* h */ * 7 /* d */
+    public makeAppSyncApiKey(apiKeyConfig: Transformer.ApiKeyConfig) {
+        let expirationDays = 180;
+        if (apiKeyConfig && apiKeyConfig.apiKeyExpirationDays) {
+            expirationDays = apiKeyConfig.apiKeyExpirationDays;
+        }
+        const expirationDateInSeconds = 60 /* s */ * 60 /* m */ * 24 /* h */ * expirationDays /* d */
         const nowEpochTime = Math.floor(Date.now() / 1000)
         return new AppSync.ApiKey({
             ApiId: Fn.GetAtt(ResourceConstants.RESOURCES.GraphQLAPILogicalID, 'ApiId'),
+            Description: (apiKeyConfig && apiKeyConfig.description) ? apiKeyConfig.description : undefined,
             Expires: Fn.If(
                 ResourceConstants.CONDITIONS.APIKeyExpirationEpochIsPositive,
                 Fn.Ref(ResourceConstants.PARAMETERS.APIKeyExpirationEpoch),
-                nowEpochTime + oneWeekFromNowInSeconds
+                nowEpochTime + expirationDateInSeconds
             ),
         }).condition(ResourceConstants.CONDITIONS.ShouldCreateAPIKey)
     }
@@ -94,19 +96,91 @@ export class ResourceFactory {
         };
     }
 
-    public updateGraphQLAPIWithAuth(apiRecord: GraphQLAPI, authMode: AppSyncAuthModeModes) {
-        return new GraphQLAPI({
+    public updateGraphQLAPIWithAuth(apiRecord: GraphQLAPI, authConfig: Transformer.AppSyncAuthConfiguration) {
+        let properties: GraphQLApiProperties = {
             ...apiRecord.Properties,
             Name: apiRecord.Properties.Name,
-            AuthenticationType: authMode,
-            UserPoolConfig: authMode === 'AMAZON_COGNITO_USER_POOLS' ?
-                new UserPoolConfig({
+            AuthenticationType: authConfig.defaultAuthentication.authenticationType,
+            UserPoolConfig: undefined,
+            OpenIDConnectConfig: undefined
+        };
+
+        switch (authConfig.defaultAuthentication.authenticationType) {
+            case 'AMAZON_COGNITO_USER_POOLS':
+                properties.UserPoolConfig = new UserPoolConfig({
                     UserPoolId: Fn.Ref(ResourceConstants.PARAMETERS.AuthCognitoUserPoolId),
                     AwsRegion: Refs.Region,
                     DefaultAction: 'ALLOW'
-                }) :
-                undefined
-        })
+                });
+                break;
+            case 'OPENID_CONNECT':
+                if (!authConfig.defaultAuthentication.openIDConnectConfig) {
+                    throw new Error('openIDConnectConfig is not configured for defaultAuthentication');
+                }
+
+                properties.OpenIDConnectConfig = this.assignOpenIDConnectConfig(authConfig.defaultAuthentication.openIDConnectConfig);
+                break;
+        }
+
+        // Configure additional authentication providers
+        if (authConfig.additionalAuthenticationProviders && authConfig.additionalAuthenticationProviders.length > 0) {
+            const additionalAuthenticationProviders = new Array<AdditionalAuthenticationProvider>();
+
+            for (let i = 0; i < authConfig.additionalAuthenticationProviders.length; i++) {
+                const sourceProvider = authConfig.additionalAuthenticationProviders[i];
+                let provider: AdditionalAuthenticationProvider;
+
+                switch (sourceProvider.authenticationType) {
+                    case 'AMAZON_COGNITO_USER_POOLS':
+                        provider = {
+                            AuthenticationType: 'AMAZON_COGNITO_USER_POOLS',
+                            UserPoolConfig: new UserPoolConfig({
+                                UserPoolId: Fn.Ref(ResourceConstants.PARAMETERS.AuthCognitoUserPoolId),
+                                AwsRegion: Refs.Region
+                            })
+                        };
+                        break;
+                    case 'API_KEY':
+                            provider = {
+                                AuthenticationType: 'API_KEY',
+                            };
+                            break;
+                    case 'AWS_IAM':
+                            provider = {
+                                AuthenticationType: 'AWS_IAM',
+                            };
+                        break;
+                    case 'OPENID_CONNECT':
+                            if (!sourceProvider.openIDConnectConfig) {
+                                const providerName = sourceProvider.openIDConnectConfig.name ?
+                                    sourceProvider.openIDConnectConfig.name :
+                                    '<Unnamed>';
+                                throw new Error(`openIDConnectConfig is not configured for ${providerName} provider`);
+                            }
+
+                            provider = {
+                                AuthenticationType: 'OPENID_CONNECT',
+                                OpenIDConnectConfig: this.assignOpenIDConnectConfig(sourceProvider.openIDConnectConfig)
+                            };
+                        break;
+                }
+
+                additionalAuthenticationProviders.push(provider);
+            }
+
+            properties.AdditionalAuthenticationProviders = additionalAuthenticationProviders;
+        }
+
+        return new GraphQLAPI(properties);
+    }
+
+    private assignOpenIDConnectConfig(config: Transformer.OpenIDConnectConfig) {
+        return new OpenIDConnectConfig({
+            Issuer: config.issuerUrl,
+            ClientId: config.clientId,
+            IatTTL: config.iatTTL,
+            AuthTTL: config.authTTL
+        });
     }
 
     public blankResolver(type: string, field: string) {

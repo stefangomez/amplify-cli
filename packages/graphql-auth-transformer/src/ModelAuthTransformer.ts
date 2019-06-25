@@ -20,6 +20,7 @@ import {
     GROUPS_AUTH_STRATEGY,
     DEFAULT_GROUPS_FIELD
 } from './constants'
+import UserPool from 'cloudform-types/types/cognito/userPool';
 
 /**
  * Implements the ModelAuthTransformer.
@@ -62,18 +63,60 @@ import {
  * attributes of the records using conditional expressions. This will likely
  * be via a new argument such as "groupsField".
  */
-export type AppSyncAuthModeModes = 'API_KEY' | 'AMAZON_COGNITO_USER_POOLS'; // Introduce later: | 'AWS_IAM' | 'OPENID_CONNECT';
-const validateAuthMode = (mode: string) => {
-    if (
-        mode !== 'API_KEY' &&
-        mode !== 'AMAZON_COGNITO_USER_POOLS'
-    ) {
-        throw new Error(`Invalid auth mode ${mode}`);
+export type AppSyncAuthMode = 'API_KEY' | 'AMAZON_COGNITO_USER_POOLS' | 'AWS_IAM' | 'OPENID_CONNECT';
+export type AppSyncAuthConfiguration = {
+    defaultAuthentication: AppSyncAuthConfigurationEntry
+    additionalAuthenticationProviders: Array<AppSyncAuthConfigurationEntry>
+};
+export type AppSyncAuthConfigurationEntry = {
+    authenticationType: AppSyncAuthMode
+    apiKeyConfig?: ApiKeyConfig
+    userPoolConfig?: UserPoolConfig
+    openIDConnectConfig?: OpenIDConnectConfig
+}
+export type ApiKeyConfig = {
+    description?: string
+    apiKeyExpirationDays: number
+};
+export type UserPoolConfig = {
+    userPoolId: string
+};
+export type OpenIDConnectConfig = {
+    name: string
+    issuerUrl: string
+    clientId?: string
+    iatTTL?: number
+    authTTL?: number
+};
+
+const validateAuthModes = (authConfig: AppSyncAuthConfiguration) => {
+    let additionalAuthModes = [];
+
+    if (authConfig.additionalAuthenticationProviders) {
+        additionalAuthModes = authConfig.additionalAuthenticationProviders.map(p => p.authenticationType).filter(t => !!t);
+    }
+
+    const authModes: AppSyncAuthMode[] = [...additionalAuthModes, authConfig.defaultAuthentication.authenticationType];
+
+    for (let i = 0; i < authModes.length; i++) {
+        const mode = authModes[i];
+
+        if (
+            mode !== 'API_KEY' &&
+            mode !== 'AMAZON_COGNITO_USER_POOLS' &&
+            mode !== 'AWS_IAM' &&
+            mode !== 'OPENID_CONNECT'
+        ) {
+            throw new Error(`Invalid auth mode ${mode}`);
+        }
     }
 }
-export interface ModelAuthTransformerConfig {
-    authMode: AppSyncAuthModeModes
-}
+
+export type ModelAuthTransformerConfig = {
+    authMode?: AppSyncAuthMode
+    authConfig?: AppSyncAuthConfiguration
+};
+
 export class ModelAuthTransformer extends Transformer {
 
     resources: ResourceFactory;
@@ -135,27 +178,49 @@ export class ModelAuthTransformer extends Transformer {
             }
             `
         )
-        this.config = config || { authMode: 'API_KEY' };
-        validateAuthMode(this.config.authMode);
+        //this.config = config || { authMode: 'API_KEY', authConfig: { defaultAuthentication: { authenticationType: 'API_KEY' } } };
+        if (config && config.authConfig) {
+            this.config = config;
+        } else {
+            this.config = { authConfig: { defaultAuthentication: { authenticationType: 'API_KEY' }, additionalAuthenticationProviders: [] } };
+        }
+        validateAuthModes(this.config.authConfig);
         this.resources = new ResourceFactory();
     }
 
     /**
-     * Updates the GraphQL API record to use user pool auth.
+     * Updates the GraphQL API record with configured authentication providers
      */
-    private updateAPIForUserPools = (ctx: TransformerContext): void => {
+    private updateAPIAuthentication = (ctx: TransformerContext): void => {
         const apiRecord = ctx.getResource(ResourceConstants.RESOURCES.GraphQLAPILogicalID) as GraphQLAPI;
-        const updated = this.resources.updateGraphQLAPIWithAuth(apiRecord, this.config.authMode);
+        const updated = this.resources.updateGraphQLAPIWithAuth(apiRecord, this.config.authConfig);
         ctx.setResource(ResourceConstants.RESOURCES.GraphQLAPILogicalID, updated);
+
+        // Check if we need to create an API key resource or not.
     }
 
     public before = (ctx: TransformerContext): void => {
-        const template = this.resources.initTemplate();
+        const template = this.resources.initTemplate(this.getApiKeyConfig());
         ctx.mergeResources(template.Resources)
         ctx.mergeParameters(template.Parameters)
         ctx.mergeOutputs(template.Outputs)
         ctx.mergeConditions(template.Conditions)
-        this.updateAPIForUserPools(ctx)
+        this.updateAPIAuthentication(ctx)
+    }
+
+    private getApiKeyConfig(): ApiKeyConfig {
+        const authProviders = [];
+
+        if (this.config.authConfig.additionalAuthenticationProviders) {
+            authProviders.concat (this.config.authConfig.additionalAuthenticationProviders.filter(p => !!p.authenticationType));
+        }
+
+        authProviders.push(this.config.authConfig.defaultAuthentication);
+
+        const apiKeyAuthProvider = authProviders.filter(p => p.authenticationType === 'API_KEY');
+
+        // Return the found instance or a default instance with 180 days of API key expiration
+        return apiKeyAuthProvider.length === 1 ? apiKeyAuthProvider[0].apiKeyConfig : { apiKeyExpirationDays: 180 };
     }
 
     /**

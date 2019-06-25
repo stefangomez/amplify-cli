@@ -37,15 +37,20 @@ function showGraphQLURL(context, resourcesToBeCreated) {
     if (!amplifyMeta[category][resourceName].output) {
       return;
     }
-    const { GraphQLAPIEndpointOutput, securityType, GraphQLAPIKeyOutput } =
+    const { GraphQLAPIEndpointOutput, authConfig, GraphQLAPIKeyOutput } =
         amplifyMeta[category][resourceName].output;
 
     if (!GraphQLAPIEndpointOutput) {
       return;
     }
 
+    const apiKeyProvider = [...(authConfig.additionalAuthenticationProviders || []), authConfig.defaultAuthentication]
+      .filter(provider => provider.authenticationType === 'API_KEY');
+
+    const hasApiKey = apiKeyProvider.length && apiKeyProvider.length > 0;
+
     context.print.info(chalk`GraphQL endpoint: {blue.underline ${GraphQLAPIEndpointOutput}}`);
-    if (securityType === 'API_KEY') {
+    if (hasApiKey) {
       context.print.info(chalk`GraphQL API KEY: {blue.underline ${GraphQLAPIKeyOutput}}`);
     }
   }
