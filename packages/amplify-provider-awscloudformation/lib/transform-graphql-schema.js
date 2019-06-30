@@ -91,7 +91,8 @@ async function transformGraphQLSchema(context, options) {
     return;
   }
 
-  const { resourceDir, parameters, authConfig } = options;
+  const { authConfig } = options;
+  let { parameters, resourceDir } = options;
   // const { noConfig } = options;
   const { forceCompile } = options;
 
