@@ -7,8 +7,8 @@ describe('getAppSyncAPIs', () => {
       output: {
         authConfig: {
           defaultAuthentication: {
-            authenticationType: 'AWS_IAM'
-          }
+            authenticationType: 'AWS_IAM',
+          },
         },
         GraphQLApiId: 'rmez4smy7bbqrpanvaaefywt64',
         GraphQLApiEndpoint:
@@ -21,8 +21,8 @@ describe('getAppSyncAPIs', () => {
       output: {
         authConfig: {
           defaultAuthentication: {
-            authenticationType: 'AWS_IAM'
-          }
+            authenticationType: 'AWS_IAM',
+          },
         },
         GraphQLApiId: '2c6gvpbh6jfjhjdazm2d5cixtm',
         GraphQLApiEndpoint:

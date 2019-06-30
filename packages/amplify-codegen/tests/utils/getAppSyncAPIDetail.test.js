@@ -21,9 +21,9 @@ describe('getAppSyncDetail', () => {
         GraphQLAPIIdOutput: 'some-random-id',
         authConfig: {
           defaultAuthentication: {
-            authenticationType: 'AWS_IAM'
-          }
-        }
+            authenticationType: 'AWS_IAM',
+          },
+        },
       },
     },
   ];
