@@ -43,7 +43,8 @@ async function run(context, category, resourceName) {
         return acc;
       }, []);
 
-      const appSyncApi = (appSyncAPIs && appSyncAPIs.length && appSyncAPIs.length > 0) ? appSyncAPIs[0] : undefined;
+      const appSyncApi = (appSyncAPIs && appSyncAPIs.length && appSyncAPIs.length > 0) ?
+        appSyncAPIs[0] : undefined;
 
       const authConfig = appSyncApi ? appSyncApi.output.authConfig : {};
 
@@ -51,7 +52,7 @@ async function run(context, category, resourceName) {
         noConfig: true,
         handleMigration: opts =>
           updateStackForAPIMigration(context, 'api', resourceName, opts),
-        authConfig
+        authConfig,
       });
     })
     .then(() => uploadAppSyncFiles(context, resources, allResources))

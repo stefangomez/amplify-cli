@@ -44,7 +44,8 @@ function showGraphQLURL(context, resourcesToBeCreated) {
       return;
     }
 
-    const apiKeyProvider = [...(authConfig.additionalAuthenticationProviders || []), authConfig.defaultAuthentication]
+    const apiKeyProvider = [...(authConfig.additionalAuthenticationProviders || []),
+      authConfig.defaultAuthentication]
       .filter(provider => provider.authenticationType === 'API_KEY');
 
     const hasApiKey = apiKeyProvider.length && apiKeyProvider.length > 0;
